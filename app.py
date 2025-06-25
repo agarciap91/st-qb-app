@@ -6,6 +6,10 @@ import time
 from gtts import gTTS
 import io
 import base64
+import speech_recognition as sr
+from audio_recorder_streamlit import audio_recorder
+import tempfile
+import os
 
 # Configuración de la página
 st.set_page_config(
@@ -84,6 +88,43 @@ def text_to_speech(text, lang='es'):
     except Exception as e:
         st.error(f"Error al generar audio: {str(e)}")
         return None
+
+# Función para convertir voz a texto
+def speech_to_text(audio_data, language='es-ES'):
+    try:
+        # Crear un archivo temporal para el audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+            tmp_file.write(audio_data)
+            tmp_file_path = tmp_file.name
+        
+        # Inicializar el reconocedor
+        recognizer = sr.Recognizer()
+        
+        # Cargar el archivo de audio
+        with sr.AudioFile(tmp_file_path) as source:
+            # Ajustar para ruido ambiente
+            recognizer.adjust_for_ambient_noise(source)
+            # Grabar el audio
+            audio = recognizer.record(source)
+        
+        # Convertir a texto usando Google Speech Recognition
+        text = recognizer.recognize_google(audio, language=language)
+        
+        # Limpiar el archivo temporal
+        os.unlink(tmp_file_path)
+        
+        return text
+    
+    except sr.UnknownValueError:
+        return "No se pudo entender el audio. Intenta hablar más claro."
+    except sr.RequestError as e:
+        return f"Error del servicio de reconocimiento: {str(e)}"
+    except Exception as e:
+        return f"Error al procesar el audio: {str(e)}"
+    finally:
+        # Asegurar que el archivo temporal se elimine
+        if 'tmp_file_path' in locals() and os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
 
 # Función para invocar el modelo
 def invoke_bedrock_model(bedrock_client, model_id, prompt, max_tokens=1000, temperature=0.7):
@@ -172,6 +213,7 @@ def main():
         
         # Control de voz
         voice_enabled = st.checkbox("🔊 Activar respuestas de voz", value=True)
+        speech_input_enabled = st.checkbox("🎤 Activar entrada por voz", value=True)
         
         if voice_enabled:
             voice_lang = st.selectbox(
@@ -183,6 +225,21 @@ def main():
                     ("de", "Deutsch"),
                     ("it", "Italiano"),
                     ("pt", "Português")
+                ],
+                format_func=lambda x: x[1]
+            )[0]
+        
+        if speech_input_enabled:
+            speech_lang = st.selectbox(
+                "Idioma de reconocimiento:",
+                options=[
+                    ("es-ES", "Español"),
+                    ("en-US", "English (US)"),
+                    ("en-GB", "English (UK)"),
+                    ("fr-FR", "Français"),
+                    ("de-DE", "Deutsch"),
+                    ("it-IT", "Italiano"),
+                    ("pt-BR", "Português (Brasil)")
                 ],
                 format_func=lambda x: x[1]
             )[0]
@@ -221,49 +278,86 @@ def main():
             if message["role"] == "assistant" and "audio" in message:
                 st.audio(message["audio"], format="audio/mp3")
 
-    # Input del usuario
-    if prompt := st.chat_input("Escribe tu mensaje aquí..."):
-        # Agregar mensaje del usuario al historial
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # Sección de entrada por voz
+    if speech_input_enabled:
+        st.markdown("### 🎤 Graba tu pregunta")
         
-        # Mostrar mensaje del usuario
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generar respuesta del asistente
-        with st.chat_message("assistant"):
-            with st.spinner("Pensando..."):
-                response = invoke_bedrock_model(
-                    bedrock_client, 
-                    selected_model, 
-                    prompt, 
-                    max_tokens, 
-                    temperature
-                )
+        # Grabador de audio
+        audio_bytes = audio_recorder(
+            text="Presiona para grabar",
+            recording_color="#e74c3c",
+            neutral_color="#34495e",
+            icon_name="microphone",
+            icon_size="2x",
+        )
+        
+        # Procesar audio grabado
+        if audio_bytes:
+            st.audio(audio_bytes, format="audio/wav")
+            
+            # Convertir audio a texto
+            with st.spinner("Procesando audio..."):
+                transcribed_text = speech_to_text(audio_bytes, speech_lang)
                 
-                if response:
-                    st.markdown(response)
+                if transcribed_text and not transcribed_text.startswith("No se pudo") and not transcribed_text.startswith("Error"):
+                    st.success(f"🎯 Texto reconocido: *{transcribed_text}*")
                     
-                    # Preparar el mensaje para agregar al historial
-                    message_data = {"role": "assistant", "content": response}
-                    
-                    # Generar audio si está habilitado
-                    if voice_enabled:
-                        with st.spinner("Generando audio..."):
-                            audio_data = text_to_speech(response, voice_lang)
-                            
-                            if audio_data:
-                                # Mostrar el audio
-                                st.audio(audio_data, format="audio/mp3")
-                                # Agregar audio al mensaje
-                                message_data["audio"] = audio_data
-                            else:
-                                st.warning("No se pudo generar el audio")
-                    
-                    # Agregar respuesta al historial
-                    st.session_state.messages.append(message_data)
+                    # Procesar como si fuera un mensaje de texto
+                    process_user_message(transcribed_text, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang if voice_enabled else None)
+                    st.rerun()
                 else:
-                    st.error("No se pudo generar una respuesta. Verifica la configuración.")
+                    st.error(transcribed_text)
+        
+        st.divider()
+
+    # Input del usuario por texto
+    if prompt := st.chat_input("Escribe tu mensaje aquí..."):
+        process_user_message(prompt, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang if voice_enabled else None)
+        st.rerun()
+
+# Función auxiliar para procesar mensajes del usuario
+def process_user_message(prompt, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang):
+    # Agregar mensaje del usuario al historial
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # Mostrar mensaje del usuario
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Generar respuesta del asistente
+    with st.chat_message("assistant"):
+        with st.spinner("Pensando..."):
+            response = invoke_bedrock_model(
+                bedrock_client, 
+                selected_model, 
+                prompt, 
+                max_tokens, 
+                temperature
+            )
+            
+            if response:
+                st.markdown(response)
+                
+                # Preparar el mensaje para agregar al historial
+                message_data = {"role": "assistant", "content": response}
+                
+                # Generar audio si está habilitado
+                if voice_enabled and voice_lang:
+                    with st.spinner("Generando audio..."):
+                        audio_data = text_to_speech(response, voice_lang)
+                        
+                        if audio_data:
+                            # Mostrar el audio
+                            st.audio(audio_data, format="audio/mp3")
+                            # Agregar audio al mensaje
+                            message_data["audio"] = audio_data
+                        else:
+                            st.warning("No se pudo generar el audio")
+                
+                # Agregar respuesta al historial
+                st.session_state.messages.append(message_data)
+            else:
+                st.error("No se pudo generar una respuesta. Verifica la configuración.")
 
 if __name__ == "__main__":
     main()
