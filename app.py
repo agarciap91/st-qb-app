@@ -249,6 +249,12 @@ def main():
         # Botón para limpiar chat
         if st.button("🗑️ Limpiar Chat"):
             st.session_state.messages = []
+            st.session_state.last_audio = None
+            st.rerun()
+            
+        # Botón para resetear grabación
+        if speech_input_enabled and st.button("🔄 Resetear Grabación"):
+            st.session_state.last_audio = None
             st.rerun()
 
     # Configuración por defecto
@@ -268,6 +274,10 @@ def main():
     # Inicializar el historial de mensajes
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    
+    # Inicializar estado para controlar el procesamiento de audio
+    if "last_audio" not in st.session_state:
+        st.session_state.last_audio = None
 
     # Mostrar el historial de mensajes
     for message in st.session_state.messages:
@@ -291,8 +301,9 @@ def main():
             icon_size="2x",
         )
         
-        # Procesar audio grabado
-        if audio_bytes:
+        # Procesar audio grabado solo si es nuevo
+        if audio_bytes and audio_bytes != st.session_state.last_audio:
+            st.session_state.last_audio = audio_bytes
             st.audio(audio_bytes, format="audio/wav")
             
             # Convertir audio a texto
@@ -304,7 +315,6 @@ def main():
                     
                     # Procesar como si fuera un mensaje de texto
                     process_user_message(transcribed_text, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang if voice_enabled else None)
-                    st.rerun()
                 else:
                     st.error(transcribed_text)
         
@@ -313,51 +323,43 @@ def main():
     # Input del usuario por texto
     if prompt := st.chat_input("Escribe tu mensaje aquí..."):
         process_user_message(prompt, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang if voice_enabled else None)
-        st.rerun()
 
 # Función auxiliar para procesar mensajes del usuario
 def process_user_message(prompt, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang):
+    # Verificar que no sea un mensaje duplicado
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user" and st.session_state.messages[-1]["content"] == prompt:
+        return
+        
     # Agregar mensaje del usuario al historial
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # Mostrar mensaje del usuario
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
     # Generar respuesta del asistente
-    with st.chat_message("assistant"):
-        with st.spinner("Pensando..."):
-            response = invoke_bedrock_model(
-                bedrock_client, 
-                selected_model, 
-                prompt, 
-                max_tokens, 
-                temperature
-            )
-            
-            if response:
-                st.markdown(response)
-                
-                # Preparar el mensaje para agregar al historial
-                message_data = {"role": "assistant", "content": response}
-                
-                # Generar audio si está habilitado
-                if voice_enabled and voice_lang:
-                    with st.spinner("Generando audio..."):
-                        audio_data = text_to_speech(response, voice_lang)
-                        
-                        if audio_data:
-                            # Mostrar el audio
-                            st.audio(audio_data, format="audio/mp3")
-                            # Agregar audio al mensaje
-                            message_data["audio"] = audio_data
-                        else:
-                            st.warning("No se pudo generar el audio")
-                
-                # Agregar respuesta al historial
-                st.session_state.messages.append(message_data)
-            else:
-                st.error("No se pudo generar una respuesta. Verifica la configuración.")
+    response = invoke_bedrock_model(
+        bedrock_client, 
+        selected_model, 
+        prompt, 
+        max_tokens, 
+        temperature
+    )
+    
+    if response:
+        # Preparar el mensaje para agregar al historial
+        message_data = {"role": "assistant", "content": response}
+        
+        # Generar audio si está habilitado
+        if voice_enabled and voice_lang:
+            audio_data = text_to_speech(response, voice_lang)
+            if audio_data:
+                message_data["audio"] = audio_data
+        
+        # Agregar respuesta al historial
+        st.session_state.messages.append(message_data)
+    else:
+        # Agregar mensaje de error al historial
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": "Lo siento, no pude generar una respuesta. Por favor, verifica la configuración."
+        })
 
 if __name__ == "__main__":
     main()
