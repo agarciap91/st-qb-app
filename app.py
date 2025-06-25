@@ -11,19 +11,54 @@ st.set_page_config(
     layout="wide"
 )
 
+# Función para verificar credenciales AWS
+def verify_aws_credentials(region_name, aws_access_key_id=None, aws_secret_access_key=None):
+    try:
+        if aws_access_key_id and aws_secret_access_key:
+            sts_client = boto3.client(
+                'sts',
+                region_name=region_name,
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key
+            )
+        else:
+            sts_client = boto3.client('sts', region_name=region_name)
+        
+        # Verificar identidad
+        response = sts_client.get_caller_identity()
+        return True, response.get('Arn', 'Unknown')
+    except Exception as e:
+        return False, str(e)
+
 # Función para inicializar el cliente de Bedrock
 @st.cache_resource
 def init_bedrock_client(region_name, use_secrets=False, aws_access_key_id=None, aws_secret_access_key=None):
     try:
+        # Verificar credenciales primero
         if use_secrets:
             # Usar credenciales desde secrets.toml
+            access_key = st.secrets["AWS_ACCESS_KEY_ID"]
+            secret_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
+            
+            # Verificar credenciales
+            valid, info = verify_aws_credentials(region_name, access_key, secret_key)
+            if not valid:
+                st.error(f"Credenciales inválidas: {info}")
+                return None
+            
             bedrock = boto3.client(
                 'bedrock-runtime',
                 region_name=region_name,
-                aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
-                aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key
             )
         elif aws_access_key_id and aws_secret_access_key:
+            # Verificar credenciales
+            valid, info = verify_aws_credentials(region_name, aws_access_key_id, aws_secret_access_key)
+            if not valid:
+                st.error(f"Credenciales inválidas: {info}")
+                return None
+                
             bedrock = boto3.client(
                 'bedrock-runtime',
                 region_name=region_name,
@@ -32,10 +67,13 @@ def init_bedrock_client(region_name, use_secrets=False, aws_access_key_id=None, 
             )
         else:
             # Usar credenciales por defecto (perfil AWS, IAM role, etc.)
+            valid, info = verify_aws_credentials(region_name)
+            if not valid:
+                st.error(f"Credenciales por defecto inválidas: {info}")
+                return None
+                
             bedrock = boto3.client('bedrock-runtime', region_name=region_name)
         
-        # Test de conexión
-        bedrock.list_foundation_models()
         return bedrock
     except KeyError as e:
         st.error(f"Error: Falta la clave en secrets.toml: {str(e)}")
@@ -161,10 +199,27 @@ def main():
                 # Verificar que las claves existen
                 if "AWS_ACCESS_KEY_ID" in st.secrets and "AWS_SECRET_ACCESS_KEY" in st.secrets:
                     st.success("✅ Credenciales encontradas en secrets.toml")
+                    # Mostrar información de la cuenta (opcional)
+                    try:
+                        valid, arn_info = verify_aws_credentials(
+                            aws_region, 
+                            st.secrets["AWS_ACCESS_KEY_ID"], 
+                            st.secrets["AWS_SECRET_ACCESS_KEY"]
+                        )
+                        if valid:
+                            st.success(f"✅ Credenciales válidas")
+                            # Mostrar solo los últimos 4 caracteres del ARN para privacidad
+                            if arn_info and len(arn_info) > 20:
+                                masked_arn = arn_info[:20] + "..." + arn_info[-10:]
+                                st.caption(f"Cuenta: {masked_arn}")
+                        else:
+                            st.error(f"❌ Credenciales inválidas: {arn_info}")
+                    except Exception as e:
+                        st.warning(f"⚠️ No se pudo verificar credenciales: {str(e)}")
                 else:
                     st.error("❌ Credenciales no encontradas en secrets.toml")
-            except:
-                st.error("❌ No se pudo acceder a secrets.toml")
+            except Exception as e:
+                st.error(f"❌ Error al acceder a secrets.toml: {str(e)}")
         
         # Selección del modelo
         st.subheader("Modelo")
