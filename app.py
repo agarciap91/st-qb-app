@@ -323,6 +323,7 @@ def main():
     # Input del usuario por texto
     if prompt := st.chat_input("Escribe tu mensaje aquí..."):
         process_user_message(prompt, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang if voice_enabled else None)
+        st.rerun()  # Solo para mensajes de texto
 
 # Función auxiliar para procesar mensajes del usuario
 def process_user_message(prompt, bedrock_client, selected_model, max_tokens, temperature, voice_enabled, voice_lang):
