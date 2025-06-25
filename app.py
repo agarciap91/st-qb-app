@@ -3,10 +3,13 @@ import boto3
 import json
 from botocore.exceptions import ClientError, NoCredentialsError
 import time
+from gtts import gTTS
+import io
+import base64
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Chat con AWS Bedrock",
+    page_title="Chat con AWS Bedrock - Con Voz",
     page_icon="🤖",
     layout="wide"
 )
@@ -60,6 +63,26 @@ def init_bedrock_client(region_name):
         return None
     except Exception as e:
         st.error(f"Error al inicializar cliente Bedrock: {str(e)}")
+        return None
+
+# Función para convertir texto a voz
+def text_to_speech(text, lang='es'):
+    try:
+        # Limitar el texto para evitar archivos muy grandes
+        if len(text) > 1000:
+            text = text[:1000] + "..."
+        
+        # Crear el objeto gTTS
+        tts = gTTS(text=text, lang=lang, slow=False)
+        
+        # Guardar en un buffer de memoria
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        
+        return audio_buffer.getvalue()
+    except Exception as e:
+        st.error(f"Error al generar audio: {str(e)}")
         return None
 
 # Función para invocar el modelo
@@ -140,11 +163,32 @@ def invoke_bedrock_model(bedrock_client, model_id, prompt, max_tokens=1000, temp
 
 # Interfaz principal
 def main():
-    st.title("🤖 Chat con AWS Bedrock")
-    st.markdown("Chatea con modelos de IA usando AWS Bedrock")
+    st.title("🤖 Chat con AWS Bedrock - Con Voz")
+    st.markdown("Chatea con modelos de IA usando AWS Bedrock y escucha las respuestas")
 
-    # Sidebar simplificado
+    # Sidebar
     with st.sidebar:
+        st.header("⚙️ Configuración")
+        
+        # Control de voz
+        voice_enabled = st.checkbox("🔊 Activar respuestas de voz", value=True)
+        
+        if voice_enabled:
+            voice_lang = st.selectbox(
+                "Idioma de voz:",
+                options=[
+                    ("es", "Español"),
+                    ("en", "English"),
+                    ("fr", "Français"),
+                    ("de", "Deutsch"),
+                    ("it", "Italiano"),
+                    ("pt", "Português")
+                ],
+                format_func=lambda x: x[1]
+            )[0]
+        
+        st.divider()
+        
         # Botón para limpiar chat
         if st.button("🗑️ Limpiar Chat"):
             st.session_state.messages = []
@@ -172,6 +216,10 @@ def main():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            
+            # Si es un mensaje del asistente y tiene audio, mostrarlo
+            if message["role"] == "assistant" and "audio" in message:
+                st.audio(message["audio"], format="audio/mp3")
 
     # Input del usuario
     if prompt := st.chat_input("Escribe tu mensaje aquí..."):
@@ -195,8 +243,25 @@ def main():
                 
                 if response:
                     st.markdown(response)
+                    
+                    # Preparar el mensaje para agregar al historial
+                    message_data = {"role": "assistant", "content": response}
+                    
+                    # Generar audio si está habilitado
+                    if voice_enabled:
+                        with st.spinner("Generando audio..."):
+                            audio_data = text_to_speech(response, voice_lang)
+                            
+                            if audio_data:
+                                # Mostrar el audio
+                                st.audio(audio_data, format="audio/mp3")
+                                # Agregar audio al mensaje
+                                message_data["audio"] = audio_data
+                            else:
+                                st.warning("No se pudo generar el audio")
+                    
                     # Agregar respuesta al historial
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.session_state.messages.append(message_data)
                 else:
                     st.error("No se pudo generar una respuesta. Verifica la configuración.")
 
