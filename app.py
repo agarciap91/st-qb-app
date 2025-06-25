@@ -13,9 +13,17 @@ st.set_page_config(
 
 # Función para inicializar el cliente de Bedrock
 @st.cache_resource
-def init_bedrock_client(region_name, aws_access_key_id=None, aws_secret_access_key=None):
+def init_bedrock_client(region_name, use_secrets=False, aws_access_key_id=None, aws_secret_access_key=None):
     try:
-        if aws_access_key_id and aws_secret_access_key:
+        if use_secrets:
+            # Usar credenciales desde secrets.toml
+            bedrock = boto3.client(
+                'bedrock-runtime',
+                region_name=region_name,
+                aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
+                aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"]
+            )
+        elif aws_access_key_id and aws_secret_access_key:
             bedrock = boto3.client(
                 'bedrock-runtime',
                 region_name=region_name,
@@ -25,7 +33,16 @@ def init_bedrock_client(region_name, aws_access_key_id=None, aws_secret_access_k
         else:
             # Usar credenciales por defecto (perfil AWS, IAM role, etc.)
             bedrock = boto3.client('bedrock-runtime', region_name=region_name)
+        
+        # Test de conexión
+        bedrock.list_foundation_models()
         return bedrock
+    except KeyError as e:
+        st.error(f"Error: Falta la clave en secrets.toml: {str(e)}")
+        return None
+    except ClientError as e:
+        st.error(f"Error de cliente AWS: {str(e)}")
+        return None
     except Exception as e:
         st.error(f"Error al inicializar cliente Bedrock: {str(e)}")
         return None
@@ -126,15 +143,28 @@ def main():
         # Opciones de autenticación
         auth_method = st.radio(
             "Método de autenticación",
-            ["Credenciales por defecto", "Credenciales manuales"]
+            ["Secrets.toml", "Credenciales manuales", "Credenciales por defecto"]
         )
         
         aws_access_key = None
         aws_secret_key = None
+        use_secrets = False
         
         if auth_method == "Credenciales manuales":
             aws_access_key = st.text_input("AWS Access Key ID", type="password")
             aws_secret_key = st.text_input("AWS Secret Access Key", type="password")
+        elif auth_method == "Secrets.toml":
+            use_secrets = True
+            # Mostrar información sobre secrets.toml
+            st.info("Usando credenciales desde secrets.toml")
+            try:
+                # Verificar que las claves existen
+                if "AWS_ACCESS_KEY_ID" in st.secrets and "AWS_SECRET_ACCESS_KEY" in st.secrets:
+                    st.success("✅ Credenciales encontradas en secrets.toml")
+                else:
+                    st.error("❌ Credenciales no encontradas en secrets.toml")
+            except:
+                st.error("❌ No se pudo acceder a secrets.toml")
         
         # Selección del modelo
         st.subheader("Modelo")
@@ -161,10 +191,20 @@ def main():
             st.rerun()
 
     # Inicializar el cliente de Bedrock
-    bedrock_client = init_bedrock_client(aws_region, aws_access_key, aws_secret_key)
+    bedrock_client = init_bedrock_client(aws_region, use_secrets, aws_access_key, aws_secret_key)
     
     if not bedrock_client:
         st.error("No se pudo inicializar el cliente de Bedrock. Verifica tus credenciales.")
+        st.info("""
+        **Pasos para solucionar:**
+        1. Verifica que tu archivo `.streamlit/secrets.toml` contenga:
+           ```
+           AWS_ACCESS_KEY_ID = "tu_access_key_aqui"
+           AWS_SECRET_ACCESS_KEY = "tu_secret_key_aqui"
+           ```
+        2. Asegúrate de que las credenciales sean correctas
+        3. Verifica que tengas permisos para Bedrock en la región seleccionada
+        """)
         return
 
     # Inicializar el historial de mensajes
@@ -204,8 +244,41 @@ def main():
                     st.error("No se pudo generar una respuesta. Verifica la configuración.")
 
     # Información adicional
-    with st.expander("ℹ️ Información"):
+    with st.expander("ℹ️ Información y Troubleshooting"):
         st.markdown("""
+        ## Configuración de secrets.toml
+        
+        Crea un archivo en `.streamlit/secrets.toml` con el siguiente formato:
+        ```toml
+        AWS_ACCESS_KEY_ID = "AKIA..."
+        AWS_SECRET_ACCESS_KEY = "..."
+        AWS_DEFAULT_REGION = "us-east-1"
+        ```
+        
+        ## Posibles causas del error InvalidSignatureException:
+        
+        1. **Credenciales incorrectas**: Verifica que tu Access Key y Secret Key sean correctos
+        2. **Región incorrecta**: Asegúrate de usar la región donde tienes acceso a Bedrock
+        3. **Permisos insuficientes**: Tu usuario IAM debe tener permisos para `bedrock:InvokeModel`
+        4. **Hora del sistema**: Verifica que la hora de tu sistema esté sincronizada
+        5. **Caracteres especiales**: Asegúrate de que no haya espacios o caracteres extra en las credenciales
+        
+        ## Política IAM mínima requerida:
+        ```json
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "bedrock:InvokeModel",
+                        "bedrock:ListFoundationModels"
+                    ],
+                    "Resource": "*"
+                }
+            ]
+        }
+        ```
         """)
 
 if __name__ == "__main__":
